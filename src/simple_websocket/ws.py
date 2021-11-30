@@ -1,6 +1,10 @@
+import collections
+import queue
+import random
 import socket
 import ssl
 import threading
+import time
 from urllib.parse import urlsplit
 
 from wsproto import ConnectionType, WSConnection
@@ -12,7 +16,7 @@ from wsproto.events import (
     Request,
     Ping,
     TextMessage,
-    BytesMessage,
+    BytesMessage, Pong,
 )
 from wsproto.frame_protocol import CloseReason
 from wsproto.utilities import LocalProtocolError
@@ -30,6 +34,61 @@ class ConnectionClosed(RuntimeError):
     pass
 
 
+class Pinger:
+    def __init__(self, interval=25, thread_class=threading.Thread,
+                 event_class=threading.Event, queue_class=collections.deque):
+        self.interval = interval
+        self.deadlines = queue_class()
+        self.event = event_class()
+
+        self.thread = thread_class(target=self._thread)
+        self.thread.start()
+
+    def register(self, ws):
+        interval = random.randint(0, self.interval)
+        print(f"delay inital ping for {interval}s")
+        self.deadlines.append((ws, time.time() + interval))
+
+    def _thread(self):
+        while True:
+            t = time.time()
+
+            # when no deadlines we want to catch new ones as soon as their deadline
+            # which is initially less than interval
+            interval = self.interval // 2
+
+            if self.deadlines:
+                ws, deadline = self.deadlines.popleft()
+
+                if deadline < t:
+                    print("due to be processed now", ws)
+                    if ws.pong_required:
+                        # have to indicate to the other thread to raise exception to calling
+                        # code, in .send, .receive, .close
+                        ws.pong_failed = True
+                    else:
+                        try:
+                            ws.send(Ping())
+                            ws.pong_required = True
+
+                            # schedule next processing for ping/pong flow
+                            self.deadlines.append((ws, t + interval))
+                        except ConnectionClosed:
+                            pass
+                            print("connection was already closed")
+
+                    interval = 0  # there might be another item to process immediately
+
+                else:
+                    # not ready to process
+                    interval = deadline - t
+                    print("delay", interval)
+                    self.deadlines.appendleft((ws, deadline))
+
+            print(f"wait {interval}s")
+            self.event.wait(interval)
+
+
 class Base:
     def __init__(self, sock=None, connection_type=None, receive_bytes=4096,
                  thread_class=threading.Thread, event_class=threading.Event):
@@ -43,6 +102,9 @@ class Base:
 
         self.ws = WSConnection(connection_type)
         self.handshake()
+
+        self.pong_required = False
+        self.pong_failed = False
 
         if not self.connected:  # pragma: no cover
             raise ConnectionError()
@@ -62,6 +124,8 @@ class Base:
         """
         if not self.connected:
             raise ConnectionClosed()
+        if self.pong_failed:
+            self.close(reason=CloseReason.PROTOCOL_ERROR, message="Pong not received within interval")
         if isinstance(data, bytes):
             out_data = self.ws.send(Message(data=data))
         else:
@@ -79,9 +143,13 @@ class Base:
         the type of the incoming message.
         """
         while self.connected and not self.input_buffer:
+            if self.pong_failed:
+                self.close(reason=CloseReason.PROTOCOL_ERROR, message="Pong not received within interval")
+
             if not self.event.wait(timeout=timeout):
                 return None
             self.event.clear()
+
         if not self.connected:  # pragma: no cover
             raise ConnectionClosed()
         return self.input_buffer.pop(0)
@@ -96,8 +164,14 @@ class Base:
         """
         if not self.connected:
             raise ConnectionClosed()
-        out_data = self.ws.send(CloseConnection(
-            reason or CloseReason.NORMAL_CLOSURE, message))
+
+        if self.pong_failed:
+            out_data = self.ws.send(CloseConnection(
+                CloseReason.PROTOCOL_ERROR, "Pong not received within interval"
+            ))
+        else:
+            out_data = self.ws.send(CloseConnection(
+                reason or CloseReason.NORMAL_CLOSURE, message))
         try:
             self.sock.send(out_data)
         except BrokenPipeError:  # pragma: no cover
@@ -131,6 +205,8 @@ class Base:
                     keep_going = False
                 elif isinstance(event, Ping):
                     out_data += self.ws.send(event.response())
+                elif isinstance(event, Pong):
+                    self.pong_required = False
                 elif isinstance(event, (TextMessage, BytesMessage)):
                     if self.incoming_message is None:
                         self.incoming_message = event.data
