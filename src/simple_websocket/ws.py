@@ -127,10 +127,13 @@ class Base:
             raise ConnectionClosed()
         if self.pong_failed:
             self.close(reason=CloseReason.PROTOCOL_ERROR, message="Pong not received within interval")
-        if isinstance(data, bytes):
+        if isinstance(data, Ping):
+            out_data = self.ws.send(data)
+        elif isinstance(data, bytes):
             out_data = self.ws.send(Message(data=data))
         else:
             out_data = self.ws.send(TextMessage(data=str(data)))
+
         self.sock.send(out_data)
 
     def receive(self, timeout=None):
