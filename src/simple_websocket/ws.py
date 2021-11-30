@@ -62,14 +62,14 @@ class Pinger:
 
                 if deadline < t:
                     print("due to be processed now", ws)
-                    if ws.pong_required:
+                    if ws.waiting_for_pong:
                         # have to indicate to the other thread to raise exception to calling
                         # code, in .send, .receive, .close
                         ws.pong_failed = True
                     else:
                         try:
                             ws.send(Ping())
-                            ws.pong_required = True
+                            ws.waiting_for_pong = True
 
                             # schedule next processing for ping/pong flow
                             self.deadlines.append((ws, t + interval))
@@ -104,7 +104,7 @@ class Base:
         self.ws = WSConnection(connection_type)
         self.handshake()
 
-        self.pong_required = False
+        self.waiting_for_pong = False
         self.pong_failed = False
 
         if not self.connected:  # pragma: no cover
@@ -207,7 +207,7 @@ class Base:
                 elif isinstance(event, Ping):
                     out_data += self.ws.send(event.response())
                 elif isinstance(event, Pong):
-                    self.pong_required = False
+                    self.waiting_for_pong = False
                 elif isinstance(event, (TextMessage, BytesMessage)):
                     if self.incoming_message is None:
                         self.incoming_message = event.data
