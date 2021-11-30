@@ -68,7 +68,7 @@ class Pinger:
                         ws.pong_failed = True
                     else:
                         try:
-                            ws.send(Ping())
+                            ws.sock.send(ws.ws.send(Ping()))
                             ws.waiting_for_pong = True
 
                             # schedule next processing for ping/pong flow
@@ -127,9 +127,8 @@ class Base:
             raise ConnectionClosed()
         if self.pong_failed:
             self.close(reason=CloseReason.PROTOCOL_ERROR, message="Pong not received within interval")
-        if isinstance(data, Ping):
-            out_data = self.ws.send(data)
-        elif isinstance(data, bytes):
+
+        if isinstance(data, bytes):
             out_data = self.ws.send(Message(data=data))
         else:
             out_data = self.ws.send(TextMessage(data=str(data)))
