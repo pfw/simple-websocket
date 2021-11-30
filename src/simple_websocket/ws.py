@@ -73,9 +73,9 @@ class Pinger:
 
                             # schedule next processing for ping/pong flow
                             self.deadlines.append((ws, t + interval))
-                        except ConnectionClosed:
+                        except OSError:
                             pass
-                            print("connection was already closed")
+                            print("error sending ping, socket closed")
 
                     interval = 0  # there might be another item to process immediately
 
