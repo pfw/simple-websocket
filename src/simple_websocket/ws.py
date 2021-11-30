@@ -80,7 +80,8 @@ class Pinger:
                     interval = 0  # there might be another item to process immediately
 
                 else:
-                    # not ready to process
+                    # not ready to process, put back into the deque and set
+                    # interval to wait until needed
                     interval = deadline - t
                     print("delay", interval)
                     self.deadlines.appendleft((ws, deadline))
